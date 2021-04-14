@@ -16,12 +16,13 @@ transaction() {
       let WithdrawRef = childAccount.link<&FlowToken.Vault{FungibleToken.Provider, FungibleToken.Balance}>(/private/Withdraw, target: /storage/MainVault)
       // make sure not nil, or else, it exists at that path
 
+      let BalanceRef = childAccount.link<&FlowToken.Vault{FungibleToken.Balance}>(/public/Balance, target: /storage/MainVault)
+
       let childCap = fundAccount.getCapability<&EducationFund.VaultGateway{EducationFund.Child}>(/private/Child)
       
       let childClient <- EducationFund.createChildClient()        
       childClient.addCapability(childCap)    
 
-      childAccount.save<@EducationFund.ChildClient>(<-childClient, to: /storage/EducationFundClient)
-      let ClientRef = childAccount.link<&EducationFund.ChildClient>(/private/EducationFundClient, target: /storage/EducationFundClient)                        
+      childAccount.save<@EducationFund.ChildClient>(<-childClient, to: /storage/EducationFundClient)                 
     }
 }
