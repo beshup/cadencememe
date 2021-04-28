@@ -165,8 +165,9 @@ pub contract FlowToken: FungibleToken {
         }
     }
 
-    init(adminAccount: AuthAccount) {
-        self.totalSupply = 0.0
+    init() {
+        let adminAccount = self.account
+        self.totalSupply = 1000.0
 
         // Create the Vault with the total supply of tokens and save it in storage
         //

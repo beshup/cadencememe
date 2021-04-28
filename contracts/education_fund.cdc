@@ -3,68 +3,60 @@ import FlowToken from 0x02
 
 access(all) contract EducationFund {
   pub resource interface Child {
-    access(contract) adultTime: UInt64
+    access(contract) let adultTime: UInt64
+    access(contract) var limit: UFix64
+    access(contract) var amountWithdrawn: UFix64
+    access(contract) var currentTime: UInt64 
 
-    pub fun withdraw(amount: UFix64, currentTime: UInt64): @FungibleToken.Vault {
+    pub fun withdraw(amount: UFix64): @FungibleToken.Vault {
       pre {
-        currentTime > self.adultTime: "Child has to be adult to withdraw"
-      }
-      post {
-        // `result` refers to the return value
-        result.balance == amount:
-          "Withdrawal amount must be the same as the balance of the withdrawn Vault"
-      }
+        self.currentTime >= self.adultTime: "Child has to be adult to withdraw"
+        self.amountWithdrawn + amount < self.limit: "Cannot exceed withdraw limit"
+      } 
     }
   }
 
   pub resource interface Parent {
     access(contract) let adultTime: UInt64
+    access(contract) var currentTime: UInt64 
 
-    pub fun deposit(from: @FungibleToken.Vault, currentTime: UInt64) {
+    pub fun increaseLimit(limitIncrement: UFix64) {
       pre {
-        currentTime < self.adultTime: "Cannot deposit after child reaches adulthood"
+        self.currentTime >= self.adultTime: "Cannot increase limit before child is adult"
       }
     }
-    pub fun increaseLimit(limitIncrement: UFix64, currentTime: UInt64) {
-      pre {
-        currentTime > self.adultTime: "Cannot increase limit before child is adult"
-      }
-    }
+
+    pub fun timeTravel(ageUp: UInt64)
   }
 
   pub resource interface ReadState {
     pub fun readlimit(): UFix64
     pub fun readAmountWithdrawn(): UFix64
     pub fun readFundBalance(): UFix64
+    pub fun readCurrentTime(): UInt64
   }
 
 
   access(all) resource VaultGateway: Child, Parent, ReadState {
     // assume times stored as unix timestamp (client handles conversion) 
     access(contract) let adultTime: UInt64
-    access(self) var limit: UFix64
-    access(self) var amountWithdrawn: UFix64
+    access(contract) var limit: UFix64
+    access(contract) var amountWithdrawn: UFix64
+
+    // unfortunately we have to keep track of this as getting the block timestamp isn't supported in the playground
+    access(contract) var currentTime: UInt64 
 
     access(self) var withdrawer: Capability<&FlowToken.Vault{FungibleToken.Provider, FungibleToken.Balance}>
-    access(self) var receiver: Capability<&FlowToken.Vault{FungibleToken.Receiver, FungibleToken.Balance}>
 
-    pub fun deposit(from: @FungibleToken.Vault, currentTime: UInt64) {
-      let ref = self.receiver.borrow() ?? panic("Could not borrow receiver")
-      ref.deposit(from: <- from)
-    } 
-
-    pub fun withdraw(amount: UFix64, currentTime: UInt64): @FungibleToken.Vault {
+    pub fun withdraw(amount: UFix64): @FungibleToken.Vault {
       let ref = self.withdrawer.borrow() ?? panic("Could not borrow withdrawer")
-      if ((self.amountWithdrawn + amount < self.limit) && (amount < ref.balance)) {
-        self.amountWithdrawn = self.amountWithdrawn + amount
-        return <- ref.withdraw(amount: amount)
-      } 
-
-      return <- FlowToken.createEmptyVault()
+      let withdrawVault <- ref.withdraw(amount: amount)
+      self.amountWithdrawn = self.amountWithdrawn + amount
+      return <- withdrawVault
     } 
 
-    pub fun increaseLimit(limitIncrement: UFix64, currentTime: UInt64) {
-      let ref = self.receiver.borrow() ?? panic("Could not borrow receiver")
+    pub fun increaseLimit(limitIncrement: UFix64) {
+      let ref = self.withdrawer.borrow() ?? panic("Could not borrow receiver")
       let proposedLimit = self.limit + limitIncrement
 
       if (proposedLimit <= self.amountWithdrawn + ref.balance) {
@@ -75,27 +67,29 @@ access(all) contract EducationFund {
       }
     }
 
-    pub fun readlimit(): UFix64 {
-      return self.limit
+    pub fun timeTravel(ageUp: UInt64) { 
+      self.currentTime = self.currentTime + ageUp
     }
 
-    pub fun readAmountWithdrawn(): UFix64 {
-      return self.amountWithdrawn
-    }
+    pub fun readlimit(): UFix64 { return self.limit }
+
+    pub fun readAmountWithdrawn(): UFix64 { return self.amountWithdrawn }
 
     pub fun readFundBalance(): UFix64 {
-      let ref = self.receiver.borrow() ?? panic("Could not borrow receiver")
+      let ref = self.withdrawer.borrow() ?? panic("Could not borrow receiver")
       return ref.balance
     }
 
-    init(adultTime: UInt64, withdrawCap: Capability<&FlowToken.Vault{FungibleToken.Provider, FungibleToken.Balance}>, receiverCap: Capability<&FlowToken.Vault{FungibleToken.Receiver, FungibleToken.Balance}>) {
+    pub fun readCurrentTime(): UInt64 { return self.currentTime }
+
+    init(adultTime: UInt64, withdrawCap: Capability<&FlowToken.Vault{FungibleToken.Provider, FungibleToken.Balance}>) {
       self.adultTime = adultTime
+      self.currentTime = 0
       self.limit = 0.0 
       // this matters after adulthood (keeping track of fund value at adulthood)
       self.amountWithdrawn = 0.0 
       
       self.withdrawer = withdrawCap 
-      self.receiver = receiverCap
     }
   }
 
@@ -147,26 +141,31 @@ access(all) contract EducationFund {
     return <- create ParentClient()   
   }
 
-  init(adultTime: UInt64) {
+  init() {
+    // hardcoded here as playground doesn't allow passing in parameters when deploying contracts
+    // if opting for no parameter option, would typically use UInt64(getCurrentBlock().timestamp) + 567710000
+    // keep in mind 567710000 = approx 18 yrs in seconds
+    // however playground doesn't support getting current block's timestamp
+    let adultTime = 18 as UInt64
+
     // Store created vault in the account storage
     self.account.save<@FungibleToken.Vault>(<-FlowToken.createEmptyVault(), to: /storage/MainVault)
     log("Empty Vault stored")
 
-    // Create a private Receiver capability to the Vault
-    let ReceiverRef = self.account.link<&FlowToken.Vault{FungibleToken.Receiver, FungibleToken.Balance}>(/private/Receiver, target: /storage/MainVault)
+    // Create a Receiver capability to the Vault
+    let ReceiverRef = self.account.link<&FlowToken.Vault{FungibleToken.Receiver, FungibleToken.Balance}>(/public/MainReceiver, target: /storage/MainVault)
     
     // make sure not nil, or else, it exists at that path
 
     // Create a private Withdraw capability to the Vault
-    let WithdrawRef = self.account.link<&FlowToken.Vault{FungibleToken.Provider, FungibleToken.Balance}>(/private/Withdraw, target: /storage/MainVault)
+    let WithdrawRef = self.account.link<&FlowToken.Vault{FungibleToken.Provider, FungibleToken.Balance}>(/private/ChildWithdraw, target: /storage/MainVault)
 
     // make sure not nil, or else, it exists at that path
 
     log("References created")
-    let Receiver = self.account.getCapability<&FlowToken.Vault{FungibleToken.Receiver, FungibleToken.Balance}>(/private/ParentReceiver)
     let Withdraw = self.account.getCapability<&FlowToken.Vault{FungibleToken.Provider, FungibleToken.Balance}>(/private/ChildWithdraw)
 
-    self.account.save<@EducationFund.VaultGateway>(<- create EducationFund.VaultGateway(adultTime, Withdraw, Receiver), to: /storage/VaultGateway)
+    self.account.save<@EducationFund.VaultGateway>(<- create EducationFund.VaultGateway(adultTime, Withdraw), to: /storage/VaultGateway)
     self.account.link<&EducationFund.VaultGateway{EducationFund.Child}>(/private/Child, target: /storage/VaultGateway)
     self.account.link<&EducationFund.VaultGateway{EducationFund.Parent}>(/private/Parent, target: /storage/VaultGateway)
 
